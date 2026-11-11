@@ -8,6 +8,8 @@ flat_assembler:
 	mov	esi,[esp+4]
 	mov	[source_path],esi
 
+	call	reset_debug_info
+
 	mov	[maximum_number_of_errors],MAX_ERRORS
 
 	xor	al,al
@@ -49,6 +51,8 @@ flat_assembler:
 	mov	edi,[output_path]
 	call	write_output_file
 	jc	write_failed
+
+	call	collect_debug_info
 
 	mov	eax,[current_pass]
 	xor	edx,edx

@@ -39,6 +39,8 @@ proc FlatEditor hwnd,wmsg,wparam,lparam
   selection_text dd ?
   syntax_proc dd ?
   syntax_colors dd ?
+  marks_proc dd ?
+  marks_colors dd ?
   caret_x dd ?
   caret_y dd ?
   pan_x dw ?
@@ -230,6 +232,12 @@ proc FlatEditor hwnd,wmsg,wparam,lparam
 	je	fem_getsearchflags
 	cmp	eax,FEM_RELEASESEARCH
 	je	fem_releasesearch
+	cmp	eax,FEM_SETLINEMARKS
+	je	fem_setlinemarks
+	cmp	eax,FEM_UPDATELINEMARKS
+	je	fem_updatelinemarks
+	cmp	eax,FEM_GETLINECOUNT
+	je	fem_getlinecount
 defwndproc:
 	invoke	DefWindowProc,[hwnd],[wmsg],[wparam],[lparam]
 	jmp	finish_wndproc
@@ -239,6 +247,8 @@ wm_create:
 	invoke	SetWindowLong,[hwnd],0,[editor_memory]
 	mov	[syntax_proc],SyntaxProc
 	mov	[syntax_colors],0
+	mov	[marks_proc],0
+	mov	[marks_colors],0
 	mov	[macro_operation],0
 	mov	[current_operation],0
 	mov	[focus],0
@@ -345,48 +355,70 @@ wm_paint:
 	jmp	get_characters_block
     paint_empty_block:
 	mov	edx,1
-	test	byte [edi],80h
-	jnz	get_empty_selection
+	mov	al,[edi]
+	and	al,0F0h
     get_empty_block:
 	cmp	edx,ecx
 	je	fill_empty_block
 	cmp	byte [esi+edx],0
 	jne	fill_empty_block
-	test	byte [edi+edx],80h
-	jnz	fill_empty_block
+	mov	ah,[edi+edx]
+	and	ah,0F0h
+	cmp	ah,al
+	jne	fill_empty_block
 	inc	edx
 	jmp	get_empty_block
     fill_empty_block:
 	push	ecx edx
+	push	eax
 	mov	eax,[font_width]
 	mul	edx
 	add	eax,[rect.left]
 	mov	[rect.right],eax
+	pop	eax
+	test	al,80h
+	jnz	fill_empty_selection
+	test	al,FELM_MARK1+FELM_MARK2+FELM_MARK3
+	jnz	fill_empty_mark
 	lea	eax,[rect]
 	invoke	FillRect,ebx,eax,[background_brush]
 	jmp	paint_next_block
-    get_empty_selection:
-	cmp	edx,ecx
-	je	fill_empty_selection
-	cmp	byte [esi+edx],0
-	jne	fill_empty_selection
-	test	byte [edi+edx],80h
-	jz	fill_empty_selection
-	inc	edx
-	jmp	get_empty_selection
     fill_empty_selection:
-	push	ecx edx
-	mov	eax,[font_width]
-	mul	edx
-	add	eax,[rect.left]
-	mov	[rect.right],eax
 	lea	eax,[rect]
 	invoke	FillRect,ebx,eax,[selection_brush]
 	jmp	paint_next_block
+    fill_empty_mark:
+	call	get_mark_colors
+	invoke	CreateSolidBrush,edx
+	push	eax
+	lea	edx,[rect]
+	invoke	FillRect,ebx,edx,eax
+	call	[DeleteObject]
+	jmp	paint_next_block
+    get_mark_colors:
+	mov	edx,[marks_colors]
+	or	edx,edx
+	jz	default_mark_colors
+	test	al,FELM_MARK3
+	jnz	mark_colors_selected
+	sub	edx,8
+	test	al,FELM_MARK2
+	jnz	mark_colors_selected
+	sub	edx,8
+      mark_colors_selected:
+	mov	eax,[edx+16]
+	mov	edx,[edx+16+4]
+	retn
+      default_mark_colors:
+	mov	eax,[selection_text]
+	mov	edx,[selection_background]
+	retn
     get_color:
 	push	ecx edx
 	test	byte [edi],80h
 	jnz	highlight_color
+	test	byte [edi],FELM_MARK1+FELM_MARK2+FELM_MARK3
+	jnz	mark_color
 	invoke	SetBkColor,ebx,[background_color]
 	mov	al,[edi]
 	or	al,al
@@ -400,6 +432,14 @@ wm_paint:
 	or	edx,edx
 	jz	default_color
 	mov	eax,[edx+(eax-1)*4]
+	invoke	SetTextColor,ebx,eax
+	jmp	color_ok
+    mark_color:
+	mov	al,[edi]
+	call	get_mark_colors
+	push	eax
+	invoke	SetBkColor,ebx,edx
+	pop	eax
 	invoke	SetTextColor,ebx,eax
 	jmp	color_ok
     highlight_color:
@@ -1643,6 +1683,20 @@ fem_setselcolor:
 	mov	[selection_text],eax
 	mov	[selection_background],ebx
 	jmp	wm_size
+fem_setlinemarks:
+	mov	eax,[wparam]
+	mov	ebx,[lparam]
+	mov	[marks_colors],eax
+	mov	[marks_proc],ebx
+	jmp	wm_size
+fem_updatelinemarks:
+	mov	dl,[last_operation]
+	mov	[current_operation],dl
+	jmp	moved_window
+fem_getlinecount:
+	mov	eax,[lines_count]
+	mov	[return_value],eax
+	jmp	ignore
 fem_setpos:
 	mov	edi,[wparam]
 	virtual at edi
@@ -2217,6 +2271,23 @@ update_screen:
     screen_prepared:
 	retn
     prepare_line:
+	call	prepare_line_content
+	cmp	[marks_proc],0
+	je	line_marks_ok
+	invoke	marks_proc,[hwnd],[line_number]
+	and	eax,FELM_MARK1+FELM_MARK2+FELM_MARK3
+	jz	line_marks_ok
+	mov	ecx,[screen_width]
+	jecxz	line_marks_ok
+	mov	edx,ebx
+	sub	edx,ecx
+      mark_line:
+	or	[edx],al
+	inc	edx
+	loop	mark_line
+      line_marks_ok:
+	retn
+    prepare_line_content:
 	push	edi ecx
 	mov	ecx,[esp]
 	mov	edi,[line_buffer]
