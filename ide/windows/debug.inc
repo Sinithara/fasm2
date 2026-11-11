@@ -1885,44 +1885,43 @@ proc DebugTextChanged uses ebx esi edi, hwnd
 	jz	.done
 	invoke	SendMessage,ebx,FEM_GETPOS,debug_fepos,0
 	mov	edx,[debug_fepos.caretLine]
-	mov	eax,ebx
-	mov	ebx,breakpoints
-	mov	esi,[breakpoints_count]
+	mov	ecx,edx
 	test	edi,edi
 	js	.lines_removed
 	sub	edx,edi 		; the lines that follow this one have been moved
-      .check_added:
-	test	esi,esi
-	jz	.done
-	cmp	eax,[ebx+Breakpoint.hwnd]
-	jne	.next_added
-	cmp	[ebx+Breakpoint.line],edx
-	jbe	.next_added
-	add	[ebx+Breakpoint.line],edi
-      .next_added:
-	add	ebx,sizeof.Breakpoint
-	dec	esi
-	jmp	.check_added
-      .lines_removed:
 	mov	ecx,edx
+	jmp	.move_breakpoints
+      .lines_removed:
 	sub	ecx,edi 		; the lines up to this one have been merged into the one containing the caret
-      .check_removed:
-	test	esi,esi
+      .move_breakpoints:
+	xor	eax,eax 		; number of altered breakpoints
+	mov	esi,breakpoints
+	push	ebp
+	mov	ebp,[breakpoints_count]
+      .check:
+	test	ebp,ebp
+	jz	.checked
+	cmp	ebx,[esi+Breakpoint.hwnd]
+	jne	.next
+	cmp	[esi+Breakpoint.line],edx
+	jbe	.next
+	inc	eax
+	cmp	[esi+Breakpoint.line],ecx
+	ja	.move
+	mov	[esi+Breakpoint.line],edx
+	jmp	.next
+      .move:
+	add	[esi+Breakpoint.line],edi
+      .next:
+	add	esi,sizeof.Breakpoint
+	dec	ebp
+	jmp	.check
+      .checked:
+	pop	ebp
+	test	eax,eax
 	jz	.done
-	cmp	eax,[ebx+Breakpoint.hwnd]
-	jne	.next_removed
-	cmp	[ebx+Breakpoint.line],edx
-	jbe	.next_removed
-	cmp	[ebx+Breakpoint.line],ecx
-	ja	.move_up
-	mov	[ebx+Breakpoint.line],edx
-	jmp	.next_removed
-      .move_up:
-	add	[ebx+Breakpoint.line],edi
-      .next_removed:
-	add	ebx,sizeof.Breakpoint
-	dec	esi
-	jmp	.check_removed
+	; the marks have already been drawn at the previous positions
+	invoke	SendMessage,ebx,FEM_UPDATELINEMARKS,0,0
       .done:
 	ret
 endp
@@ -2236,6 +2235,8 @@ proc DebugShutdown
 	mov	[debug_state],DBGS_NONE
       .finished:
 	stdcall DebugSessionEnded
+	stdcall DebugSetStatus,_debug_status_stopped
+	stdcall DebugLog,_debug_status_stopped
       .done:
 	ret
 endp

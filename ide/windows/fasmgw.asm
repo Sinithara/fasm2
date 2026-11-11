@@ -123,6 +123,7 @@ section '.data' data readable writeable
   _debug_stop_question db 'The program is being debugged. Stop debugging?',0
   _debug_log_started db 'Debugging %s',0
   _debug_status_running db 'Running',0
+  _debug_status_stopped db 'Debugging stopped',0
   _debug_status_exited db 'Program has ended with exit code %d (%08Xh)',0
   _debug_status_breakpoint db 'Breakpoint',0
   _debug_status_break db 'Interrupted',0
@@ -2906,9 +2907,9 @@ proc CompileDialog hwnd_dlg,msg,wparam,lparam
 	invoke	SendMessage,[hwnd_tabctrl],TCM_GETITEM,[lparam],ei
 	invoke	CreateMutex,NULL,FALSE,NULL
 	mov	[mutex],eax
-	invoke	HeapAlloc,[hheap],HEAP_ZERO_MEMORY,4
+	invoke	HeapAlloc,[hheap],HEAP_ZERO_MEMORY,8
 	mov	[stdout],eax
-	invoke	HeapAlloc,[hheap],HEAP_ZERO_MEMORY,4
+	invoke	HeapAlloc,[hheap],HEAP_ZERO_MEMORY,8
 	mov	[stderr],eax
 	call	system_init
 	invoke	GetFullPathName,[ei.pszpath],1000h,path_buffer,param_buffer
