@@ -461,11 +461,17 @@ section '.data' data readable writeable
   debug_file_part dd ?
   debug_interface_part dd ?
 
+  debug_symbols dd ?
+  debug_symbols_size dd ?
+  debug_symbols_capacity dd ?
+  debug_symbols_depth dd ?
+
   debug_sections dd ?
   debug_sections_count dd ?
   debug_entry_point dd ?
   debug_image_size dd ?
   debug_image_base dd ?
+  debug_preferred_base dd ?
 
   debug_thread dd ?
   debug_thread_id dd ?
@@ -524,7 +530,9 @@ section '.data' data readable writeable
   breakpoints rb MAX_BREAKPOINTS*sizeof.Breakpoint
 
   debug_code rb 16
-  debug_token rb 44h
+  debug_token rb DEBUG_TOKEN_LENGTH
+  debug_name rb DEBUG_TOKEN_LENGTH
+  debug_symbol_name rb DEBUG_NAME_LENGTH
   debug_expression rb 100h
   debug_status rb 200h
   debug_frame_buffer rb 100h

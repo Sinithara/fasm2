@@ -227,10 +227,209 @@ debug_string_length:
 	jne	measure_debug_string
 	retn
 
-collect_debug_symbols:
+release_debug_symbols:
+; note: discards the list of labels
+	and	[debug_symbols_size],0
 	retn
 
-release_debug_symbols:
+collect_debug_symbols:
+; note:
+;  makes a list of the labels defined by the assembled program, so that their names can be used to point to
+;  the places in memory of the debugged program; every record in the list consists of the value (double word),
+;  flags (byte, bit 0 set when the value is relocatable), length of name (byte) and the name
+	and	[debug_symbols_size],0
+	and	[debug_symbols_depth],0
+	mov	ebx,[root_namespace]
+	mov	edi,debug_symbol_name
+
+collect_namespace_symbols:
+; in: ebx - SymbolTree_Root, edi - end of the name of the namespace
+; preserves: edi
+	cmp	[debug_symbols_depth],8
+	jae	namespace_symbols_collected
+	inc	[debug_symbols_depth]
+	lea	esi,[ebx+sizeof.SymbolTree_Root]
+	mov	ecx,TREE_HEIGHT
+	mov	edx,1 shl TREE_NODE_BITS
+	test	[ebx+SymbolTree_Root.attributes],SYMTREE_LOCAL
+	jz	collect_tree_symbols
+	mov	ecx,LOCAL_TREE_HEIGHT
+	mov	edx,1 shl LOCAL_TREE_NODE_BITS
+      collect_tree_symbols:
+	call	collect_node_symbols
+	dec	[debug_symbols_depth]
+      namespace_symbols_collected:
+	retn
+
+collect_node_symbols:
+; in: esi - branches of the node, ecx = number of levels left, edx = number of branches, edi - end of the name of the namespace
+; preserves: edi
+	mov	ebx,edx
+      collect_branch_symbols:
+	lodsd
+	test	eax,eax
+	jz	next_symbol_branch
+	push	ebx ecx edx esi
+	cmp	ecx,1
+	je	collect_foliage_symbols
+	mov	esi,eax
+	dec	ecx
+	call	collect_node_symbols
+	jmp	symbol_branch_collected
+      collect_foliage_symbols:
+	mov	ebx,eax
+	call	collect_named_symbols
+      symbol_branch_collected:
+	pop	esi edx ecx ebx
+      next_symbol_branch:
+	dec	ebx
+	jnz	collect_branch_symbols
+	retn
+
+collect_named_symbols:
+; in: ebx - SymbolTree_Foliage, edi - end of the name of the namespace
+; preserves: edi
+	cmp	[ebx+SymbolTree_Foliage.name_kind],NAME_CASEINSENSITIVE
+	ja	next_named_symbol
+	mov	ecx,[ebx+SymbolTree_Foliage.name_length]
+	jecxz	next_named_symbol
+	lea	eax,[edi+ecx+2]
+	cmp	eax,debug_symbol_name+DEBUG_NAME_LENGTH
+	jae	next_named_symbol
+	push	edi
+	mov	esi,[ebx+SymbolTree_Foliage.name_data]
+	rep	movsb
+	call	collect_symbol
+	mov	eax,[ebx+SymbolTree_Foliage.child_namespace]
+	test	eax,eax
+	jz	nested_symbols_collected
+	push	ebx
+	mov	ebx,eax
+	mov	al,'.'
+	stosb
+	call	collect_namespace_symbols
+	pop	ebx
+      nested_symbols_collected:
+	pop	edi
+      next_named_symbol:
+	mov	ebx,[ebx+SymbolTree_Foliage.next]
+	test	ebx,ebx
+	jnz	collect_named_symbols
+	retn
+
+collect_symbol:
+; in: ebx - SymbolTree_Foliage, edi - end of the name of the symbol
+; preserves: ebx, edi
+	lea	edx,[ebx+sizeof.SymbolTree_Foliage]
+      find_expression_symbol:
+	cmp	[edx+SymbolTree_Leaf.class],SYMCLASS_EXPRESSION
+	je	expression_symbol_found
+	mov	edx,[edx+SymbolTree_Leaf.next]
+	test	edx,edx
+	jnz	find_expression_symbol
+      symbol_collected:
+	retn
+      expression_symbol_found:
+	test	[edx+SymbolTree_Leaf.flags],SYM_VARIABLE
+	jnz	symbol_collected
+	mov	edx,[edx+SymbolTree_Leaf.definition]
+	test	edx,edx
+	jz	symbol_collected
+	cmp	[edx+ValueDefinition.type],VALTYPE_NUMERIC
+	jne	symbol_collected
+	mov	eax,[current_pass]
+	cmp	eax,[edx+ValueDefinition.pass]
+	jne	symbol_collected
+	mov	esi,[edx+ValueDefinition.value]
+	lodsd
+	mov	ecx,eax
+	xor	eax,eax
+	cmp	ecx,5
+	ja	symbol_collected
+	jb	get_symbol_value
+	cmp	byte [esi+4],0
+	jne	symbol_collected
+	mov	eax,[esi]
+	jmp	symbol_value_ok
+      get_symbol_value:
+	jecxz	symbol_value_ok
+	push	ecx
+	movsx	eax,byte [esi+ecx-1]
+      get_symbol_value_byte:
+	dec	ecx
+	jz	symbol_value_complete
+	shl	eax,8
+	mov	al,[esi+ecx-1]
+	jmp	get_symbol_value_byte
+      symbol_value_complete:
+	pop	ecx
+      symbol_value_ok:
+	add	esi,ecx
+	xor	dl,dl
+	cmp	dword [esi],0
+	je	symbol_absolute
+	; the value is accepted when it is relative to a single element with a unit coefficient,
+	; this is what the addresses in a relocatable program look like
+	cmp	dword [esi+4],1
+	jne	symbol_collected
+	cmp	byte [esi+8],1
+	jne	symbol_collected
+	cmp	dword [esi+9],0
+	jne	symbol_collected
+	mov	dl,1
+	jmp	store_symbol
+      symbol_absolute:
+	cmp	eax,10000h
+	jb	symbol_collected	; small numbers are not likely to be addresses
+      store_symbol:
+	mov	ecx,edi
+	sub	ecx,debug_symbol_name
+	cmp	ecx,100h
+	jae	symbol_collected
+	push	eax edx ecx
+	mov	edx,[debug_symbols_size]
+	lea	edx,[edx+ecx+6]
+	cmp	edx,[debug_symbols_capacity]
+	jbe	symbol_storage_ready
+	cmp	edx,1000000h
+	jae	symbol_storage_failed
+	shl	edx,1
+	cmp	edx,10000h
+	jae	symbol_storage_size_ok
+	mov	edx,10000h
+      symbol_storage_size_ok:
+	push	edx
+	mov	eax,[debug_symbols]
+	test	eax,eax
+	jz	allocate_symbol_storage
+	invoke	HeapReAlloc,[hheap],0,eax,edx
+	jmp	symbol_storage_allocated
+      allocate_symbol_storage:
+	invoke	HeapAlloc,[hheap],0,edx
+      symbol_storage_allocated:
+	pop	edx
+	test	eax,eax
+	jz	symbol_storage_failed
+	mov	[debug_symbols],eax
+	mov	[debug_symbols_capacity],edx
+      symbol_storage_ready:
+	pop	ecx edx eax
+	push	edi
+	mov	edi,[debug_symbols]
+	add	edi,[debug_symbols_size]
+	stosd
+	mov	al,dl
+	stosb
+	mov	al,cl
+	stosb
+	mov	esi,debug_symbol_name
+	rep	movsb
+	sub	edi,[debug_symbols]
+	mov	[debug_symbols_size],edi
+	pop	edi
+	retn
+      symbol_storage_failed:
+	pop	ecx edx eax
 	retn
 
 ; ----------------------------------------------------------------------------
@@ -273,6 +472,8 @@ proc DebugLoadImage uses ebx esi edi
 	jnz	.library
 	mov	eax,[esi+18h+10h]
 	mov	[debug_entry_point],eax
+	mov	eax,[esi+18h+1Ch]
+	mov	[debug_preferred_base],eax
 	mov	eax,[esi+18h+38h]
 	mov	[debug_image_size],eax
 	movzx	ecx,word [esi+6]
@@ -2122,14 +2323,27 @@ proc DebugShowLine uses ebx esi edi, path,line
 	invoke	SendMessage,[hwnd_tabctrl],TCM_SETCURSEL,ebx,0
 	invoke	SendMessage,[hwnd_main],FM_SELECT,ebx,0
       .show:
-	mov	eax,[line]
-	mov	[debug_fepos.selectionLine],eax
-	mov	[debug_fepos.caretLine],eax
 	mov	[debug_fepos.selectionPosition],1
 	mov	[debug_fepos.caretPosition],1
-	invoke	SendMessage,[hwnd_fedit],FEM_SETPOS,debug_fepos,0
+	; visit the neighbouring lines first, to have them visible too
+	mov	eax,[line]
+	sub	eax,3
+	jg	.show_preceding
+	mov	eax,1
+      .show_preceding:
+	call	.move_caret
+	mov	eax,[line]
+	add	eax,6
+	call	.move_caret
+	mov	eax,[line]
+	call	.move_caret
 	mov	eax,[hwnd_fedit]
 	ret
+      .move_caret:
+	mov	[debug_fepos.selectionLine],eax
+	mov	[debug_fepos.caretLine],eax
+	invoke	SendMessage,[hwnd_fedit],FEM_SETPOS,debug_fepos,0
+	retn
       .failed:
 	xor	eax,eax
 	ret
@@ -2188,9 +2402,11 @@ proc DebugNotification uses ebx esi edi, code,param
 	invoke	SendMessage,[debug_execution_hwnd],FEM_UPDATELINEMARKS,0,0
 	jmp	.location_shown
       .no_source:
+	; the source of the current instruction is not known, show the call that led to it
 	mov	eax,[debug_frame_return]
 	test	eax,eax
 	jz	.location_shown
+	dec	eax
 	call	debug_find_line
 	jc	.location_shown
 	mov	ebx,esi
@@ -2767,9 +2983,40 @@ proc DebugUpdateStack uses ebx esi edi
 	call	debug_put_string
       .frame_ok:
 	mov	eax,[debug_value]
+	push	edi
+	call	debug_check_return_address
+	pop	edi
+	jc	.not_return_address
+	; this value looks like a return address, show the line of source containing the call
+	mov	eax,[debug_value]
+	dec	eax
 	call	debug_find_line
+	jnc	.show_line
+      .not_return_address:
+	; when the value points into the program, show the label that it refers to
+	mov	eax,[debug_value]
+	push	ebx
+	call	debug_find_nearest_symbol
+	pop	ebx
 	jc	.row_done
-	; this value points into the code of the program, show the corresponding line of source
+	cmp	eax,1000h
+	jae	.row_done
+	push	eax
+	mov	ax,2020h
+	stosw
+	movzx	ecx,byte [esi+5]
+	add	esi,6
+	rep	movsb
+	pop	eax
+	test	eax,eax
+	jz	.row_done
+	push	eax
+	mov	al,'+'
+	stosb
+	pop	eax
+	call	debug_put_short_hex
+	jmp	.row_done
+      .show_line:
 	push	ebx
 	mov	ebx,esi
 	mov	ax,2020h
@@ -2817,6 +3064,21 @@ debug_put_hex:
 	stosb
 	loop	.digit
 	retn
+
+debug_put_short_hex:
+; in: eax = value, edi - buffer
+; out: edi - end of the stored digits
+; preserves: ebx, esi
+	mov	ecx,8
+	mov	edx,eax
+      .count:
+	cmp	ecx,1
+	je	debug_put_hex
+	test	edx,0F0000000h
+	jnz	debug_put_hex
+	shl	edx,4
+	dec	ecx
+	jmp	.count
 
 debug_put_decimal:
 ; in: eax = value, edi - buffer
@@ -2957,13 +3219,14 @@ debug_evaluate_term:
 	je	.negated
 	cmp	al,'+'
 	je	.positive
-	; copy the name or number, converting it to lower case
+	; copy the name or number, keeping also a variant converted to lower case
 	mov	edi,debug_token
-	mov	ecx,40h
+	mov	ecx,DEBUG_TOKEN_LENGTH-1
       .copy:
 	lodsb
 	call	.is_symbol_character
 	jc	.copied
+	mov	[edi+DEBUG_TOKEN_LENGTH],al
 	cmp	al,'A'
 	jb	.store
 	cmp	al,'Z'
@@ -2976,6 +3239,7 @@ debug_evaluate_term:
       .copied:
 	dec	esi
 	xor	al,al
+	mov	[edi+DEBUG_TOKEN_LENGTH],al
 	stosb
 	cmp	edi,debug_token+1
 	je	.invalid
@@ -3041,7 +3305,7 @@ debug_evaluate_term:
       .not_register:
 	; is it a label?
 	push	esi
-	mov	esi,edx
+	mov	esi,debug_name
 	call	debug_find_symbol
 	pop	esi
 	jnc	.valid
@@ -3153,6 +3417,125 @@ debug_evaluate_term:
 
 debug_find_symbol:
 ; in: esi - name
-; out: cf set when there is no such label, otherwise eax = address
+; out: cf set when there is no such label, otherwise eax = address in the memory of the debugged program
+; preserves: esi
+	cmp	[debug_info_ready],0
+	je	.not_found
+	call	debug_string_length
+	cmp	ecx,100h
+	jae	.not_found
+	mov	edx,ecx 			; dl = length of name
+	xor	dh,dh				; at first the exact name is looked for, then the case is ignored
+      .search:
+	mov	ebx,[debug_symbols]
+	mov	edi,[debug_symbols_size]
+	add	edi,ebx
+      .check:
+	cmp	ebx,edi
+	jae	.searched
+	movzx	ecx,byte [ebx+5]
+	cmp	cl,dl
+	jne	.next
+	push	esi edi
+	lea	edi,[ebx+6]
+      .compare:
+	lodsb
+	mov	ah,[edi]
+	inc	edi
+	or	al,dh
+	or	ah,dh
+	cmp	al,ah
+	jne	.compared
+	dec	ecx
+	jnz	.compare
+      .compared:
+	pop	edi esi
+	jne	.next
+	mov	eax,[ebx]
+	test	byte [ebx+4],1
+	jz	.found
+	; a relocatable value is a valid address only when it lies within the image of the program
+	sub	eax,[debug_preferred_base]
+	cmp	eax,[debug_image_size]
+	jae	.next
+	add	eax,[debug_image_base]
+	clc
+	retn
+      .next:
+	movzx	ecx,byte [ebx+5]
+	lea	ebx,[ebx+ecx+6]
+	jmp	.check
+      .searched:
+	test	dh,dh
+	jnz	.not_found
+	mov	dh,20h
+	jmp	.search
+      .found:
+	call	debug_relocate
+	clc
+	retn
+      .not_found:
+	stc
+	retn
+
+debug_relocate:
+; in: eax = address as assumed by the assembler
+; out: eax = corresponding address in the memory of the debugged program
+; preserves: ebx, ecx, edx, esi, edi
+	push	eax
+	sub	eax,[debug_preferred_base]
+	cmp	eax,[debug_image_size]
+	pop	eax
+	jae	.done
+	sub	eax,[debug_preferred_base]
+	add	eax,[debug_image_base]
+      .done:
+	retn
+
+debug_find_nearest_symbol:
+; in: eax = address in the memory of the debugged program
+; out:
+;  cf set when the address is not within the image of the program or there is no label that would precede it
+;  when cf = 0:
+;   esi - record of the label (value, flags, length of name, name)
+;   eax = offset relative to the label
+; preserves: edi
+	cmp	[debug_info_ready],0
+	je	.not_found
+	sub	eax,[debug_image_base]
+	cmp	eax,[debug_image_size]
+	jae	.not_found
+	add	eax,[debug_preferred_base]
+	xor	esi,esi
+	mov	ebx,[debug_symbols]
+	mov	edx,[debug_symbols_size]
+	add	edx,ebx
+      .check:
+	cmp	ebx,edx
+	jae	.checked
+	mov	ecx,[ebx]
+	cmp	ecx,eax
+	ja	.next
+	test	esi,esi
+	jz	.better
+	cmp	ecx,[esi]
+	jbe	.next
+      .better:
+	mov	esi,ebx
+      .next:
+	movzx	ecx,byte [ebx+5]
+	lea	ebx,[ebx+ecx+6]
+	jmp	.check
+      .checked:
+	test	esi,esi
+	jz	.not_found
+	mov	ecx,[esi]
+	sub	ecx,[debug_preferred_base]
+	cmp	ecx,[debug_image_size]
+	jae	.not_found
+	sub	eax,[esi]
+	clc
+	retn
+      .not_found:
 	stc
 	retn
