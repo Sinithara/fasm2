@@ -636,6 +636,15 @@ assembly_line:
 	mov	[current_context.base_label],ecx
 	cmp	[ebx+SourceEntry.type],SOURCE_MACRO
 	je	get_line_from_macro
+    if defined trace_source_line
+	; optional hook provided by the interface (see ide/windows/fasmg.inc),
+	; it is notified every time a new line is about to be taken from a file,
+	; this allows to associate the generated output with the lines of source text
+	cmp	[ebx+SourceEntry.type],SOURCE_FILE
+	jne	source_line_traced
+	call	trace_source_line
+      source_line_traced:
+    end if
 	and	[name_token],0
 	mov	esi,[ebx+SourceEntry.text]
 	mov	eax,[ebx+SourceEntry.offset]
