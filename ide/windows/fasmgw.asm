@@ -756,6 +756,8 @@ include 'fedit.inc'
 	mov	eax,[msg.wParam]
 	cmp	eax,VK_ESCAPE
 	je	leave_debugger_panel
+	cmp	eax,VK_RETURN
+	je	msg_loop
 	cmp	eax,VK_F1
 	jb	msg_translate
 	cmp	eax,VK_F12

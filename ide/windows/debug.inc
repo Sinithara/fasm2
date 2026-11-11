@@ -1,7 +1,5 @@
 
 ; flat assembler g IDE for Windows - integrated debugger
-; Copyright (c) 2024, Tomasz Grysztar and contributors.
-; All rights reserved.
 
 ; The debugger consists of three cooperating parts:
 ;  1. The collector of debug information, which runs inside the assembler thread
@@ -2223,10 +2221,11 @@ proc DebugStop
 	ret
 endp
 
-proc DebugShutdown
+proc DebugShutdown uses ebx
 ; note: ends the debugging session and waits until the debugger thread finishes
 	cmp	[hthread_debug],0
 	je	.done
+	mov	ebx,[debug_state]
 	stdcall DebugStop
 	invoke	WaitForSingleObject,[hthread_debug],5000
 	cmp	eax,WAIT_TIMEOUT
@@ -2235,6 +2234,8 @@ proc DebugShutdown
 	mov	[debug_state],DBGS_NONE
       .finished:
 	stdcall DebugSessionEnded
+	cmp	ebx,DBGS_NONE
+	je	.done			; the program has already ended on its own
 	stdcall DebugSetStatus,_debug_status_stopped
 	stdcall DebugLog,_debug_status_stopped
       .done:

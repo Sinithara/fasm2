@@ -26,11 +26,10 @@ DBGR_SYNC     = 4	; update the breakpoints
 
 ; notifications sent by the debugger thread with FM_DEBUG message
 
-DBGN_RUNNING  = 1	; program has started or resumed execution
-DBGN_PAUSED   = 2	; program has been stopped, lparam = DBGP_# reason
-DBGN_EXITED   = 3	; program has ended, lparam = exit code
-DBGN_FAILED   = 4	; program could not be started, lparam = error code
-DBGN_OUTPUT   = 5	; lparam = text for the output log (allocated from process heap)
+DBGN_PAUSED   = 1	; program has been stopped, lparam = DBGP_# reason
+DBGN_EXITED   = 2	; program has ended, lparam = exit code
+DBGN_FAILED   = 3	; program could not be started, lparam = error code
+DBGN_OUTPUT   = 4	; lparam = text for the output log (allocated from process heap)
 
 ; reasons for the pause
 
